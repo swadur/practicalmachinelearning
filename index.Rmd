@@ -1,0 +1,159 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Suleman Wadur"
+date: "December 27, 2017"
+output: html_document
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+## Summary
+
+ This documents provides a summary report of the result of my attempt to predict the class of exercise given certain data that were captured by 6 participants wearing personal activity devices such as Jawbone, Fitbit etc. The prediction is attempted using the Machine Learning approach of using training data to build a model, and finally using the model to predict the outcome of a sample test data to determine the exercise classes.
+ 
+### About the data
+ The data is based on the information captured when 6 pearticipants performed barbell lifts in 5 different ways, refered to as a "classe". Further information regarding the data can be found at http://groupware.les.inf.puc-rio.br/har (Section: Weight Lifting Exercise Dataset)   
+ 
+ Training data: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv   
+ Testing data: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv  
+ 
+#### Libraries
+ This section loads all needed libraries. Am suppressing both warnings and messages for this section to make a cleaner report.
+```{r libraries, message=FALSE, warning=FALSE}
+## Load Libraries
+
+library(ggplot2)
+library(caret)
+library(kernlab)
+library(randomForest)
+```
+
+#### Data Load and Prep
+ This section will get and load data. It will also perform initial data cleansing and prepping for model training.
+```{r prepData}
+## Get data
+## file check and data download
+if(!file.exists("./pml-training.csv") && !file.exists("./pml-testing.csv") ) {
+  fileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+  download.file(fileUrl, destfile="./pml-training.csv")
+  
+  fileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+  download.file(fileUrl, destfile="./pml-testing.csv")
+}
+
+
+## Read data files and identifying bad values.
+ trainingData <- read.csv("pml-training.csv", na.strings = c("#DIV/0!", "NA",""))
+ testingData <- read.csv("pml-testing.csv", na.strings = c("#DIV/0!", "NA",""))
+
+
+## Lets summarize the raw data to identity features that can be used in making the predictions. 
+## To predict the outcome of the class of exercise, we have to look at a measurement of the activities performed.
+## Most of the features needed should be based on the information recorded by the devices. Here are the first set of variables to remove.
+ #"X"
+ #"user_name"
+ #"raw_timestamp_part_1"
+ #"raw_timestamp_part_2"
+ #"cvtd_timestamp"          
+ #"new_window"
+ #"num_window"
+ #summary(trainingData)
+ 
+ ## exclude the irrelevant variables
+ training <- trainingData[,-c(1:7)]
+ testing <- testingData[,-c(1:7)]
+```
+ 
+Further remove variables with a lot of missing values in the training data in order to avoid missing value error during model training. The below uses the nearZeroVar function to determine these variables and displays 10 of such variables.
+ 
+```{r}
+ # Next is to remove variables with a high number of missing values. This is because most of these will have very little variability and not good predictors
+ # I will use the nearZeroVar function to eliminate these variables right away. These are variables with nsv = TRUE. 
+ nsv <- nearZeroVar(training, saveMetrics = TRUE)
+ head(nsv, 10)
+ 
+ training <- training[,-(nearZeroVar(training))]
+ testing <- testing[,-(nearZeroVar(testing))] 
+```
+
+Next is to further remove noise from the data. Initially, an attempt to run prcomp on the training data to identify principal variables failed due to more missing data. Again, below are some of these variables
+
+```{r prepData2}
+ #Run prcomp to perform PCA to further reduce variables with noise
+ #prcomp(training)
+ 
+ # PRCOMP result in error due to variables with missing values. So I will remove these variables with any missing values
+ n <- data.frame(sapply(training, function(x) sum(is.na(x))) )
+ colnames(n) <- c("NA_Cnt")
+ n$var <- rownames(n)
+ n <- n[order(n$NA_Cnt, decreasing = TRUE), c(2,1)]
+
+  # Display some of the variables with any missing values. These will also be removed in the next steps
+ message ("Output of variables along with the total number of missing values")
+ print(head(n[n$NA_Cnt > 0, ], 10), row.names = FALSE)
+ 
+  # Remove variables with missing values and store in new dataset
+ newTraining <- training[, colSums(is.na(training)) == 0 ]
+ newTesting <- testing[, colSums(is.na(testing)) == 0 ]
+```
+
+### Cross Validation and PCA
+Cross Validation: The training data is split into sub-training/test sets into ito to build a model on the sub-training. The model is then evaluated on the test set and estimated errors are reviewed. The sub-training data will represent 75% of the training data while the remaining will be used as sub-test data.  
+
+PCA: As part of the cross-validation, I will perform a Principal Component Analysis (PCA) on the training data in order to identify variables that are essential in the model prediction. This will be done using preProcess function.
+
+```{r CV-PCA}
+# create train and test sets for cross validation
+ set.seed(33833)
+ inTrain <- createDataPartition(y=newTraining$classe,p=0.75, list=FALSE)
+ train <- newTraining[inTrain,]
+ test <- newTraining[-inTrain,]
+ 
+  # run PCA on all the variables except the outcome. This will determine the number of components in order
+ # to capture 95 percent variance.
+ preProc <- preProcess(train[,-53],method="pca", thresh = .95)
+ numComp <- preProc$numComp
+ 
+``` 
+
+ There will be `r numComp` variables that are regarded as principal components in determing the "classe" of exercise per a 95% treshold analysis. Below is a plot 
+
+The next step is to compute the new dataset for the Principal Components. This will be used to run the model between the outcome and the principal components.  
+
+Principal Components of the sub-test data from the training dataset is computed and a confusion matrix is used to compare the results
+```{r }
+#featurePlot(x=train[,-53], y=train$classe, plot ="pairs")
+
+#create PCA dataset to run against training data
+trainingPC <- predict(preProc,train[,1:52])
+
+#use randomForest to fit the model between the outcome from training data and the principal components
+modelFit <- randomForest(train$classe ~ .,   data=trainingPC)
+print(modelFit)
+modelFit$importance
+
+#plot the very important Principal components that's used in the model.
+ varImpPlot(modelFit)
+ 
+testingPC <- predict(preProc, test[,1:52])
+predTest <- predict(modelFit,testingPC)
+confusionMatrix(test$classe, predTest)
+```
+ 
+```{r }
+#qplot(classe, predTest, colour=classe, data = test)
+```
+
+The model build seems to predict the "classe" of the sub train/test data with a 97% accuracy. With this I will run the model against the set of 20 test cases to predict their outcomes.
+```{r }
+#applying model on 20 test cases
+newTestingPC <- predict(preProc, newTesting[1:52])
+#pred2 <- predict(modelFit,newTesting)
+pred2 <- predict(modelFit, newTestingPC)
+pred2
+```
+
+####Conclusion
+The result of the specificity and sensitivity also shows that each class of exercise were highly identifiable using the model.
